@@ -378,6 +378,32 @@
   .market-wide-value{ font-family:"JetBrains Mono", monospace; font-size:16px; font-weight:700; color:var(--text-primary); }
   .market-wide-note{ font-size:11.5px; color:var(--text-faint); margin-top:2px; }
   .market-error{ font-size:12px; color:var(--text-faint); text-align:center; padding:10px; }
+  .market-summary{
+    background:var(--bg-card);
+    border:1px solid var(--divider);
+    border-radius:12px;
+    padding:14px;
+    margin-bottom:6px;
+  }
+  .market-summary-title{
+    font-family:"Noto Serif KR", serif;
+    font-weight:700;
+    font-size:14px;
+    margin-bottom:8px;
+    color:var(--text-primary);
+  }
+  .market-summary p{
+    font-size:13.5px;
+    line-height:1.75;
+    color:var(--text-primary);
+    margin:0;
+  }
+  .market-summary-note{
+    font-size:11px;
+    color:var(--text-faint);
+    font-style:italic;
+    margin-bottom:16px;
+  }
 </style>
 </head>
 <body>
@@ -922,6 +948,75 @@ function miniGaugeSVG(pct){
     '<circle cx="60" cy="78" r="4" fill="#EDEEF2"/></svg>';
 }
 
+function koreanFngLabel(label){
+  const map = {
+    'Extreme Fear': '극단적 공포',
+    'Fear': '공포',
+    'Neutral': '중립',
+    'Greed': '탐욕',
+    'Extreme Greed': '극단적 탐욕'
+  };
+  return map[label] || label;
+}
+
+function buildMarketSummary(data){
+  const validIdx = (data.indices || []).filter(ix => !ix.error && ix.changePct != null);
+  let idxSentence = '';
+  if (validIdx.length){
+    const avg = validIdx.reduce((s, ix) => s + ix.changePct, 0) / validIdx.length;
+    const absAvg = Math.abs(avg);
+    if (absAvg < 0.5){
+      idxSentence = '오늘 국내외 주요 지수는 대체로 보합권에서 움직이고 있습니다.';
+    }else{
+      const dir = avg >= 0 ? '상승' : '하락';
+      const mag = absAvg < 1.5 ? '완만한' : (absAvg < 3 ? '뚜렷한' : '큰 폭의');
+      idxSentence = '오늘 국내외 주요 지수는 평균적으로 ' + mag + ' ' + dir + ' 흐름을 보이고 있습니다.';
+    }
+    const notable = validIdx.filter(ix => ix.athDrawdownPct != null && Math.abs(ix.athDrawdownPct) >= 15);
+    if (notable.length){
+      idxSentence += ' ' + notable.map(ix => escapeHtml(ix.name) + '는 사상 최고점 대비 ' + Math.abs(ix.athDrawdownPct).toFixed(1) + '% 낮은 상태').join(', ') + '입니다.';
+    }
+  }
+
+  let vixSentence = '';
+  if (data.vix && !data.vix.error){
+    const v = data.vix.current;
+    const label = v < 20 ? '투자자들이 비교적 안심하고 있는' : (v < 30 ? '다소 불안감이 커진' : '공포 심리가 강한');
+    vixSentence = ' 시장의 불안 심리를 나타내는 변동성 지수(VIX)는 ' + v.toFixed(1) + '로, ' + label + ' 상태입니다.';
+  }
+
+  let krwSentence = '';
+  if (data.krw){
+    krwSentence = ' 원/달러 환율은 1달러당 ' + Math.round(data.krw).toLocaleString('ko-KR') + '원 수준입니다.';
+  }
+
+  let cryptoSentence = '';
+  if (data.crypto){
+    const c = data.crypto;
+    const parts = [];
+    if (c.btc.changePct != null){
+      parts.push('비트코인은 24시간 동안 ' + Math.abs(c.btc.changePct).toFixed(1) + '% ' + (c.btc.changePct >= 0 ? '상승' : '하락'));
+    }
+    if (c.eth.changePct != null){
+      parts.push('이더리움은 ' + Math.abs(c.eth.changePct).toFixed(1) + '% ' + (c.eth.changePct >= 0 ? '상승' : '하락'));
+    }
+    let fngPart = '';
+    if (c.fng){
+      fngPart = ' 시장 심리를 나타내는 공포·탐욕 지수는 ' + c.fng.value + '(' + koreanFngLabel(c.fng.label) + ')입니다.';
+    }
+    cryptoSentence = (parts.length ? ' 암호화폐 시장에서는 ' + parts.join(', ') + '했습니다.' : '') + fngPart;
+  }
+
+  const body = (idxSentence + vixSentence + krwSentence + cryptoSentence).trim();
+  if (!body) return '';
+
+  return '<div class="market-summary">' +
+      '<div class="market-summary-title">오늘의 시장, 한눈에 보기</div>' +
+      '<p>' + body + '</p>' +
+    '</div>' +
+    '<div class="market-summary-note">이 요약은 시장 상황을 쉽게 이해하도록 돕는 참고 정보이며, 투자 판단은 본인의 몫입니다.</div>';
+}
+
 function fmtChange(pct){
   if (pct == null || isNaN(pct)) return '';
   const cls = pct >= 0 ? 'price-up' : 'price-down';
@@ -995,7 +1090,7 @@ function renderMarket(data){
         '<div class="market-wide-body">' +
           '<div class="market-wide-title">크립토 공포·탐욕 지수</div>' +
           '<div class="market-wide-value">' + c.fng.value + '</div>' +
-          '<div class="market-wide-note">' + escapeHtml(c.fng.label) + '</div>' +
+          '<div class="market-wide-note">' + escapeHtml(koreanFngLabel(c.fng.label)) + '</div>' +
         '</div></div>';
     }
     const ratioHtml = c.ethBtcRatio != null
@@ -1012,6 +1107,7 @@ function renderMarket(data){
       '<span></span>' +
       '<button class="refresh-btn" onclick="refreshMarket()">새로고침</button>' +
     '</div>' +
+    buildMarketSummary(data) +
     '<div class="market-section-title">국내외 지수</div>' +
     '<div class="market-grid">' + indexCards + '</div>' +
     '<div class="market-section-title">리스크 지표</div>' +
