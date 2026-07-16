@@ -221,6 +221,71 @@
     color:var(--text-faint);
     padding:18px 20px 0;
   }
+
+  .hidden{ display:none !important; }
+  .modal-overlay{
+    position:fixed;
+    inset:0;
+    background:rgba(6,10,18,0.72);
+    z-index:50;
+    display:flex;
+    align-items:flex-end;
+    justify-content:center;
+  }
+  .modal-panel{
+    background:var(--bg-panel);
+    width:100%;
+    max-width:640px;
+    max-height:88vh;
+    overflow-y:auto;
+    border-radius:18px 18px 0 0;
+    padding:16px 20px 32px;
+    border-top:1px solid var(--divider);
+  }
+  .modal-header{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    margin-bottom:16px;
+    position:sticky;
+    top:0;
+    background:var(--bg-panel);
+    padding:4px 0 10px;
+  }
+  .modal-close{
+    background:none;
+    border:1px solid var(--divider);
+    color:var(--text-muted);
+    border-radius:8px;
+    padding:6px 14px;
+    font-size:13px;
+    cursor:pointer;
+  }
+  .modal-original-link{
+    color:var(--accent-gold);
+    font-size:13px;
+    text-decoration:none;
+  }
+  .modal-title{
+    font-family:"Noto Serif KR", serif;
+    font-weight:700;
+    font-size:18px;
+    line-height:1.5;
+    margin-bottom:16px;
+    color:var(--text-primary);
+  }
+  .modal-body p{
+    font-size:14.5px;
+    line-height:1.85;
+    color:var(--text-primary);
+    margin:0 0 14px;
+  }
+  .modal-note{
+    font-size:12.5px;
+    color:var(--text-faint);
+    font-style:italic;
+    margin-bottom:16px;
+  }
 </style>
 </head>
 <body>
@@ -269,6 +334,16 @@
 </div>
 
 <footer id="lastUpdated"></footer>
+
+<div class="modal-overlay hidden" id="articleModal">
+  <div class="modal-panel">
+    <div class="modal-header">
+      <button class="modal-close" id="modalClose">닫기</button>
+      <a class="modal-original-link" id="modalOriginal" target="_blank" rel="noopener">원문 보기 ↗</a>
+    </div>
+    <div class="modal-body" id="modalBody"></div>
+  </div>
+</div>
 
 <script>
 /* ---------------- Config ---------------- */
@@ -349,6 +424,64 @@ async function translateItems(items, concurrency = 6){
   });
   await Promise.all(workers);
   persistTranslationCache();
+}
+
+function chunkText(text, maxLen = 1800){
+  const paras = text.split('\n').filter(Boolean);
+  const chunks = [];
+  let cur = '';
+  for (const p of paras){
+    if (cur && (cur.length + p.length + 1) > maxLen){
+      chunks.push(cur);
+      cur = p;
+    }else{
+      cur = cur ? cur + '\n' + p : p;
+    }
+  }
+  if (cur) chunks.push(cur);
+  return chunks;
+}
+
+async function translateLongText(text){
+  const chunks = chunkText(text);
+  const translated = [];
+  for (const chunk of chunks){
+    translated.push(await translateToKorean(chunk));
+  }
+  return translated.join('\n\n');
+}
+
+async function fetchArticleTextViaProxy(url, proxyUrl){
+  const res = await fetch(proxyUrl);
+  if (!res.ok) throw new Error('article proxy http=' + res.status);
+  const html = await res.text();
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  doc.querySelectorAll('script,style,nav,footer,aside,header,noscript').forEach(n => n.remove());
+  let paras = Array.from(doc.querySelectorAll('article p'));
+  if (paras.length < 3) paras = Array.from(doc.querySelectorAll('p'));
+  const text = paras.map(p => p.textContent.replace(/\s+/g, ' ').trim())
+    .filter(t => t.length > 40)
+    .slice(0, 25)
+    .join('\n');
+  if (!text) throw new Error('no article paragraphs extracted');
+  return text;
+}
+
+async function fetchArticleText(url){
+  const proxies = [
+    'https://api.allorigins.win/raw?url=' + encodeURIComponent(url),
+    'https://corsproxy.io/?url=' + encodeURIComponent(url)
+  ];
+  let lastErr;
+  for (const proxyUrl of proxies){
+    try{
+      return await fetchArticleTextViaProxy(url, proxyUrl);
+    }catch(e){
+      lastErr = e;
+      console.warn('article fetch failed via', proxyUrl, e.message || e);
+    }
+  }
+  throw lastErr || new Error('all article proxies failed');
 }
 
 let state = { domestic: null, intl: null };
@@ -537,18 +670,20 @@ function renderList(ranked, tab){
     const originalLine = (tab === 'intl' && it.translatedTitle && it.translatedTitle !== it.title)
       ? '<div class="card-original">' + escapeHtml(it.title) + '</div>'
       : '';
-    const href = (tab === 'intl')
-      ? 'https://translate.google.com/translate?sl=auto&tl=ko&u=' + encodeURIComponent(it.link)
-      : it.link;
-    return '<a class="card" href="' + href + '" target="_blank" rel="noopener">' +
+    const inner =
       '<div class="rank">' + rank + '</div>' +
       '<div class="card-body">' +
         '<div class="card-title">' + escapeHtml(displayTitle) + '</div>' +
         originalLine +
         '<div class="card-meta">' + escapeHtml(it.source) + ' · ' + multi + timeAgo(it.pubDate) + '</div>' +
         '<div class="score-bar"><div class="score-fill" style="width:' + pct + '%"></div></div>' +
-      '</div>' +
-    '</a>';
+      '</div>';
+
+    if (tab === 'intl'){
+      // Opens an in-app translated reader instead of navigating out in English
+      return '<div class="card" data-idx="' + i + '" role="button">' + inner + '</div>';
+    }
+    return '<a class="card" href="' + it.link + '" target="_blank" rel="noopener">' + inner + '</a>';
   }).join('');
 }
 
@@ -652,6 +787,55 @@ function setDatestamp(){
   const timeStr = String(now.getHours()).padStart(2,'0') + ':' + String(now.getMinutes()).padStart(2,'0');
   document.getElementById('datestamp').innerHTML = dateStr + '(' + days[now.getDay()] + ') <b>' + timeStr + '</b>';
 }
+
+/* ---------------- Article reader modal ---------------- */
+async function openArticleModal(item){
+  const modal = document.getElementById('articleModal');
+  const body = document.getElementById('modalBody');
+  const originalLink = document.getElementById('modalOriginal');
+  originalLink.href = item.link;
+  modal.classList.remove('hidden');
+  body.innerHTML = '<div class="state"><div class="spinner"></div><b>기사를 번역하는 중입니다</b>원문을 가져와 한글로 옮기고 있어요.</div>';
+
+  const titleKo = item.translatedTitle || await translateToKorean(item.title);
+  let bodyKo = '';
+  let note = '';
+
+  try{
+    const rawText = await fetchArticleText(item.link);
+    bodyKo = await translateLongText(rawText);
+  }catch(e){
+    console.warn('full article translate failed, falling back to summary:', e.message || e);
+    try{
+      bodyKo = item.description ? await translateToKorean(item.description) : '';
+      note = '<p class="modal-note">전체 기사를 불러오지 못해 요약만 번역했습니다. "원문 보기"에서 전체 내용을 확인하세요.</p>';
+    }catch(e2){
+      note = '<p class="modal-note">번역에 실패했습니다. "원문 보기"에서 원문을 확인해 주세요.</p>';
+    }
+  }
+
+  const paragraphsHtml = bodyKo.split('\n').filter(Boolean).map(p => '<p>' + escapeHtml(p) + '</p>').join('');
+  body.innerHTML = '<div class="modal-title">' + escapeHtml(titleKo) + '</div>' + note + (paragraphsHtml || '');
+}
+
+function closeArticleModal(){
+  document.getElementById('articleModal').classList.add('hidden');
+}
+
+document.getElementById('list').addEventListener('click', (e) => {
+  if (currentTab !== 'intl') return;
+  const card = e.target.closest('.card[data-idx]');
+  if (!card) return;
+  const item = state.intl && state.intl[Number(card.dataset.idx)];
+  if (item) openArticleModal(item);
+});
+document.getElementById('modalClose').addEventListener('click', closeArticleModal);
+document.getElementById('articleModal').addEventListener('click', (e) => {
+  if (e.target.id === 'articleModal') closeArticleModal();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeArticleModal();
+});
 
 /* ---------------- Init ---------------- */
 document.querySelectorAll('.tab').forEach(btn => {
