@@ -1,7 +1,7 @@
 {
-  "name": "여명브리핑 - 국내외 뉴스 우선순위",
-  "short_name": "여명브리핑",
-  "description": "매일 아침, 국내외 뉴스를 중요도 순으로 정리해 보여주는 앱",
+  "name": "주요뉴스 30위 - 국내외 뉴스 우선순위",
+  "short_name": "주요뉴스 30위",
+  "description": "매일 아침, 국내외 뉴스를 중요도 순으로 정리해 상위 30건씩 보여주는 앱",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
