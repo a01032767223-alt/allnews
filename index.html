@@ -179,6 +179,13 @@
     color:var(--text-muted);
     margin-bottom:8px;
   }
+  .card-original{
+    font-size:12px;
+    color:var(--text-faint);
+    line-height:1.4;
+    margin-bottom:8px;
+    font-style:italic;
+  }
   .score-bar{
     height:4px;
     border-radius:2px;
@@ -292,6 +299,37 @@ const INTEREST_KEYWORDS = {
 const RSS2JSON = 'https://api.rss2json.com/v1/api.json?rss_url=';
 const RSS2JSON_API_KEY = '2v0cwdedibrbnog3phzpfexyzehe3nkryy3jnmkk'; // rss2json.com 발급 키 적용 완료
 const CACHE_KEY_PREFIX = 'dawnbriefing_cache_';
+const TOP_N = 30;
+
+const translationCache = new Map();
+async function translateToKorean(text){
+  if (!text) return text;
+  if (translationCache.has(text)) return translationCache.get(text);
+  try{
+    const url = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=ko&dt=t&q=' + encodeURIComponent(text);
+    const res = await fetch(url);
+    const data = await res.json();
+    const translated = (data[0] || []).map(seg => seg[0]).join('');
+    const result = translated || text;
+    translationCache.set(text, result);
+    return result;
+  }catch(e){
+    console.warn('translation failed:', e.message || e);
+    translationCache.set(text, text);
+    return text;
+  }
+}
+
+async function translateItems(items, concurrency = 6){
+  const queue = items.slice();
+  const workers = new Array(Math.min(concurrency, queue.length)).fill(null).map(async () => {
+    while (queue.length){
+      const it = queue.shift();
+      it.translatedTitle = await translateToKorean(it.title);
+    }
+  });
+  await Promise.all(workers);
+}
 
 let state = { domestic: null, intl: null };
 let currentTab = 'domestic';
@@ -465,7 +503,7 @@ function renderState(html){
   document.getElementById('list').innerHTML = '<div class="state">' + html + '</div>';
 }
 
-function renderList(ranked){
+function renderList(ranked, tab){
   const listEl = document.getElementById('list');
   if (!ranked.length){
     renderState('<b>표시할 기사가 없습니다</b>잠시 후 새로고침을 눌러 다시 시도해 주세요.');
@@ -475,10 +513,15 @@ function renderList(ranked){
     const pct = Math.round(it.score * 100);
     const rank = String(i + 1).padStart(2, '0');
     const multi = it.sourceCount > 1 ? it.sourceCount + '개 매체 공통 · ' : '';
+    const displayTitle = (tab === 'intl' && it.translatedTitle) ? it.translatedTitle : it.title;
+    const originalLine = (tab === 'intl' && it.translatedTitle && it.translatedTitle !== it.title)
+      ? '<div class="card-original">' + escapeHtml(it.title) + '</div>'
+      : '';
     return '<a class="card" href="' + it.link + '" target="_blank" rel="noopener">' +
       '<div class="rank">' + rank + '</div>' +
       '<div class="card-body">' +
-        '<div class="card-title">' + escapeHtml(it.title) + '</div>' +
+        '<div class="card-title">' + escapeHtml(displayTitle) + '</div>' +
+        originalLine +
         '<div class="card-meta">' + escapeHtml(it.source) + ' · ' + multi + timeAgo(it.pubDate) + '</div>' +
         '<div class="score-bar"><div class="score-fill" style="width:' + pct + '%"></div></div>' +
       '</div>' +
@@ -505,7 +548,7 @@ function updateGauge(topDomestic, topIntl){
   const angle = -90 + avg * 180; // -90(low) to +90(high) across the semicircle
   document.getElementById('needle').setAttribute('transform', 'rotate(' + angle.toFixed(1) + ' 60 78)');
 
-  document.getElementById('gauge-headline').textContent = top.title;
+  document.getElementById('gauge-headline').textContent = top.translatedTitle || top.title;
   document.getElementById('gauge-label').textContent = '오늘의 최상위 이슈 · 지수 ' + Math.round(avg * 100);
 }
 
@@ -527,10 +570,19 @@ async function refresh(tab, { forceNetwork = true } = {}){
   }
 
   const useWeights = document.getElementById('weightToggle').checked;
-  const ranked = scoreItems(items, tab, useWeights);
+  const rankedFull = scoreItems(items, tab, useWeights);
+  const ranked = rankedFull.slice(0, TOP_N);
+
+  if (tab === 'intl'){
+    if (currentTab === tab){
+      renderState('<div class="spinner"></div><b>번역하는 중입니다</b>국외 기사 제목을 한글로 옮기고 있어요.');
+    }
+    await translateItems(ranked);
+  }
+
   state[tab] = ranked;
 
-  if (currentTab === tab) renderList(ranked);
+  if (currentTab === tab) renderList(ranked, tab);
   updateGauge(state.domestic, state.intl);
 
   const now = new Date();
@@ -540,7 +592,7 @@ async function refresh(tab, { forceNetwork = true } = {}){
 function switchTab(tab){
   currentTab = tab;
   document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
-  if (state[tab]) renderList(state[tab]);
+  if (state[tab]) renderList(state[tab], tab);
   else refresh(tab);
 }
 
@@ -557,14 +609,15 @@ document.querySelectorAll('.tab').forEach(btn => {
   btn.addEventListener('click', () => switchTab(btn.dataset.tab));
 });
 document.getElementById('refreshBtn').addEventListener('click', () => refresh(currentTab));
-document.getElementById('weightToggle').addEventListener('change', () => {
+document.getElementById('weightToggle').addEventListener('change', async () => {
   if (state[currentTab]){
     const useWeights = document.getElementById('weightToggle').checked;
     const cached = loadCache(currentTab);
     if (cached){
-      const ranked = scoreItems(cached.items, currentTab, useWeights);
+      const ranked = scoreItems(cached.items, currentTab, useWeights).slice(0, TOP_N);
+      if (currentTab === 'intl') await translateItems(ranked);
       state[currentTab] = ranked;
-      renderList(ranked);
+      renderList(ranked, currentTab);
       updateGauge(state.domestic, state.intl);
     }
   }
