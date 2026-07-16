@@ -121,6 +121,7 @@
   .tab.active{ color:var(--text-primary); }
   .tab[data-tab="domestic"].active{ border-bottom-color:var(--accent-teal); }
   .tab[data-tab="intl"].active{ border-bottom-color:var(--accent-coral); }
+  .tab[data-tab="market"].active{ border-bottom-color:var(--accent-gold); }
 
   .toolbar{
     display:flex; align-items:center; justify-content:space-between;
@@ -305,6 +306,78 @@
     font-style:italic;
     margin-bottom:16px;
   }
+
+  /* ---------- Market tab ---------- */
+  :root{
+    --price-up:#E5484D;
+    --price-down:#3B82F6;
+  }
+  .market-view{ padding:14px 16px 8px; }
+  .market-section-title{
+    font-size:12px;
+    color:var(--text-faint);
+    text-transform:uppercase;
+    letter-spacing:0.06em;
+    margin:18px 4px 8px;
+  }
+  .market-section-title:first-child{ margin-top:4px; }
+  .market-grid{
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    gap:8px;
+  }
+  .market-card{
+    background:var(--bg-card);
+    border:1px solid var(--divider);
+    border-radius:12px;
+    padding:12px;
+  }
+  .market-card-title{
+    font-size:12px;
+    color:var(--text-muted);
+    margin-bottom:4px;
+  }
+  .market-card-value{
+    font-family:"JetBrains Mono", monospace;
+    font-size:17px;
+    font-weight:700;
+    color:var(--text-primary);
+  }
+  .market-card-change{
+    font-family:"JetBrains Mono", monospace;
+    font-size:12.5px;
+    font-weight:600;
+    margin-top:2px;
+  }
+  .price-up{ color:var(--price-up); }
+  .price-down{ color:var(--price-down); }
+  .sparkline{ width:100%; height:28px; margin-top:8px; display:block; }
+  .trigger-badge{
+    display:inline-block;
+    margin-top:8px;
+    font-size:11px;
+    padding:3px 8px;
+    border-radius:20px;
+    background:rgba(232,163,61,0.14);
+    color:var(--accent-gold);
+    border:1px solid rgba(232,163,61,0.35);
+  }
+  .market-wide-card{
+    background:var(--bg-card);
+    border:1px solid var(--divider);
+    border-radius:12px;
+    padding:14px;
+    display:flex;
+    align-items:center;
+    gap:14px;
+    margin-bottom:8px;
+  }
+  .mini-gauge{ width:64px; height:50px; flex-shrink:0; }
+  .market-wide-body{ flex:1; min-width:0; }
+  .market-wide-title{ font-size:12.5px; color:var(--text-muted); margin-bottom:2px; }
+  .market-wide-value{ font-family:"JetBrains Mono", monospace; font-size:16px; font-weight:700; color:var(--text-primary); }
+  .market-wide-note{ font-size:11.5px; color:var(--text-faint); margin-top:2px; }
+  .market-error{ font-size:12px; color:var(--text-faint); text-align:center; padding:10px; }
 </style>
 </head>
 <body>
@@ -338,9 +411,10 @@
 <div class="tabbar">
   <button class="tab active" data-tab="domestic">국내</button>
   <button class="tab" data-tab="intl">국외</button>
+  <button class="tab" data-tab="market">증시</button>
 </div>
 
-<div class="toolbar">
+<div class="toolbar" id="newsToolbar">
   <label class="toggle">
     <input type="checkbox" id="weightToggle" checked>
     관심 가중치 반영
@@ -350,6 +424,10 @@
 
 <div class="list" id="list">
   <div class="state"><div class="spinner"></div><b>뉴스를 모으는 중입니다</b>여러 매체의 기사를 비교해 중요도를 계산하고 있어요.</div>
+</div>
+
+<div class="market-view hidden" id="marketView">
+  <div class="state"><div class="spinner"></div><b>시장 데이터를 불러오는 중입니다</b>지수·환율·암호화폐 시세를 모으고 있어요.</div>
 </div>
 
 <footer id="lastUpdated"></footer>
@@ -503,7 +581,7 @@ async function fetchArticleText(url){
   throw lastErr || new Error('all article proxies failed');
 }
 
-let state = { domestic: null, intl: null };
+let state = { domestic: null, intl: null, market: null };
 let currentTab = 'domestic';
 
 /* ---------------- Utilities ---------------- */
@@ -670,6 +748,301 @@ function scoreItems(items, tab, useWeights){
   return finalList;
 }
 
+/* ---------------- Market ---------------- */
+const MARKET_INDEX_SYMBOLS = [
+  { key:'kospi', name:'코스피', yahoo:'^KS11', trackDrawdown:true },
+  { key:'kosdaq', name:'코스닥', yahoo:'^KQ11', trackDrawdown:false },
+  { key:'sp500', name:'S&P 500', yahoo:'^GSPC', trackDrawdown:true },
+  { key:'nasdaq', name:'나스닥', yahoo:'^IXIC', trackDrawdown:false }
+];
+const MARKET_CACHE_KEY = CACHE_KEY_PREFIX + 'market';
+const MARKET_STALE_MS = 5 * 60 * 1000;
+
+async function fetchYahooChart(symbol, range, interval){
+  const target = 'https://query1.finance.yahoo.com/v8/finance/chart/' + encodeURIComponent(symbol) + '?range=' + range + '&interval=' + interval;
+  const proxies = [
+    'https://api.allorigins.win/raw?url=' + encodeURIComponent(target),
+    'https://corsproxy.io/?url=' + encodeURIComponent(target)
+  ];
+  let lastErr;
+  for (const proxyUrl of proxies){
+    try{
+      const res = await fetch(proxyUrl);
+      if (!res.ok) throw new Error('http=' + res.status);
+      const text = await res.text();
+      const data = JSON.parse(text);
+      const result = data && data.chart && data.chart.result && data.chart.result[0];
+      if (!result) throw new Error('no chart result');
+      return result;
+    }catch(e){
+      lastErr = e;
+      console.warn('[market:' + symbol + '] yahoo chart failed via', proxyUrl, e.message || e);
+    }
+  }
+  throw lastErr || new Error('yahoo chart unavailable');
+}
+
+function drawdownStage(pctFromAth){
+  if (pctFromAth == null) return null;
+  const d = Math.abs(pctFromAth);
+  if (d < 15) return '1단계 · 방어자산 구간 (드로다운 ' + d.toFixed(1) + '%)';
+  if (d < 25) return '2단계 · 광범위지수 매수 구간 (드로다운 ' + d.toFixed(1) + '%)';
+  if (d < 35) return '3단계 · 핵심 매수 구간 (드로다운 ' + d.toFixed(1) + '%)';
+  if (d < 45) return '4단계 · 레버리지 소액 구간 (드로다운 ' + d.toFixed(1) + '%)';
+  return '5단계 · 마지막 매수 구간 (드로다운 ' + d.toFixed(1) + '%)';
+}
+
+async function loadIndexData(sym){
+  try{
+    const recent = await fetchYahooChart(sym.yahoo, '3mo', '1d');
+    const quote = recent.indicators && recent.indicators.quote && recent.indicators.quote[0];
+    const closes = ((quote && quote.close) || []).filter(v => v != null);
+    const meta = recent.meta || {};
+    const current = meta.regularMarketPrice != null ? meta.regularMarketPrice : closes[closes.length - 1];
+    const prevClose = meta.chartPreviousClose != null ? meta.chartPreviousClose : (closes[closes.length - 2] != null ? closes[closes.length - 2] : current);
+    const changePct = prevClose ? ((current - prevClose) / prevClose * 100) : 0;
+
+    let athDrawdownPct = null;
+    if (sym.trackDrawdown){
+      try{
+        const long = await fetchYahooChart(sym.yahoo, '10y', '1mo');
+        const lq = long.indicators && long.indicators.quote && long.indicators.quote[0];
+        const longCloses = ((lq && lq.close) || []).filter(v => v != null);
+        const ath = Math.max(current, ...longCloses);
+        athDrawdownPct = ath ? ((current - ath) / ath * 100) : null;
+      }catch(e){
+        console.warn('[market:' + sym.key + '] ATH history failed:', e.message || e);
+      }
+    }
+
+    return { key: sym.key, name: sym.name, current, changePct, sparkline: closes.slice(-30), athDrawdownPct };
+  }catch(e){
+    console.warn('[market:' + sym.key + '] index load failed:', e.message || e);
+    return { key: sym.key, name: sym.name, error: true };
+  }
+}
+
+async function fetchCoinGeckoSpark(id){
+  try{
+    const res = await fetch('https://api.coingecko.com/api/v3/coins/' + id + '/market_chart?vs_currency=usd&days=30&interval=daily');
+    const data = await res.json();
+    return (data.prices || []).map(p => p[1]);
+  }catch(e){
+    console.warn('coingecko sparkline failed for', id, e.message || e);
+    return [];
+  }
+}
+
+async function loadCryptoSection(){
+  try{
+    const res = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd&include_24hr_change=true');
+    const priceData = await res.json();
+    const btc = priceData.bitcoin || {};
+    const eth = priceData.ethereum || {};
+    const [btcSpark, ethSpark] = await Promise.all([
+      fetchCoinGeckoSpark('bitcoin'),
+      fetchCoinGeckoSpark('ethereum')
+    ]);
+    const ethBtcRatio = (eth.usd && btc.usd) ? (eth.usd / btc.usd) : null;
+
+    let fng = null;
+    try{
+      const fngRes = await fetch('https://api.alternative.me/fng/?limit=1');
+      const fngData = await fngRes.json();
+      const d0 = fngData && fngData.data && fngData.data[0];
+      if (d0) fng = { value: Number(d0.value), label: d0.value_classification };
+    }catch(e){
+      console.warn('fear&greed fetch failed:', e.message || e);
+    }
+
+    return {
+      btc: { price: btc.usd, changePct: btc.usd_24h_change, sparkline: btcSpark },
+      eth: { price: eth.usd, changePct: eth.usd_24h_change, sparkline: ethSpark },
+      ethBtcRatio, fng
+    };
+  }catch(e){
+    console.warn('crypto section failed:', e.message || e);
+    return null;
+  }
+}
+
+async function loadExchangeRate(){
+  try{
+    const res = await fetch('https://open.er-api.com/v6/latest/USD');
+    const data = await res.json();
+    return (data && data.rates && data.rates.KRW) || null;
+  }catch(e){
+    console.warn('exchange rate failed:', e.message || e);
+    return null;
+  }
+}
+
+async function loadMarketData(){
+  const [indices, crypto, krw] = await Promise.all([
+    Promise.all(MARKET_INDEX_SYMBOLS.map(loadIndexData)),
+    loadCryptoSection(),
+    loadExchangeRate()
+  ]);
+  const vix = await loadIndexData({ key:'vix', name:'VIX', yahoo:'^VIX', trackDrawdown:false });
+  const payload = { indices, vix, crypto, krw, ts: Date.now() };
+  try{ localStorage.setItem(MARKET_CACHE_KEY, JSON.stringify(payload)); }catch(e){}
+  return payload;
+}
+
+function loadMarketCache(){
+  try{
+    const raw = localStorage.getItem(MARKET_CACHE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  }catch(e){ return null; }
+}
+
+function sparklineSVG(values, color){
+  if (!values || values.length < 2) return '';
+  const w = 100, h = 28;
+  const min = Math.min(...values), max = Math.max(...values);
+  const range = (max - min) || 1;
+  const pts = values.map((v, i) => {
+    const x = (i / (values.length - 1)) * w;
+    const y = h - ((v - min) / range) * h;
+    return x.toFixed(1) + ',' + y.toFixed(1);
+  }).join(' ');
+  return '<svg class="sparkline" viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none">' +
+    '<polyline points="' + pts + '" fill="none" stroke="' + color + '" stroke-width="2"/></svg>';
+}
+
+function miniGaugeSVG(pct){
+  // pct: 0..1 position along the semicircle (reuses the #gaugeGrad gradient defined in the masthead gauge)
+  const clamped = Math.max(0, Math.min(1, pct));
+  const angle = -90 + clamped * 180;
+  const offset = (207 * (1 - clamped)).toFixed(1);
+  return '<svg class="mini-gauge" viewBox="0 0 120 92">' +
+    '<path d="M 12 78 A 48 48 0 1 1 108 78" fill="none" stroke="#263349" stroke-width="10" stroke-linecap="round"/>' +
+    '<path d="M 12 78 A 48 48 0 1 1 108 78" fill="none" stroke="url(#gaugeGrad)" stroke-width="10" stroke-linecap="round" stroke-dasharray="207" stroke-dashoffset="' + offset + '"/>' +
+    '<line x1="60" y1="78" x2="60" y2="34" stroke="#EDEEF2" stroke-width="3" stroke-linecap="round" transform="rotate(' + angle.toFixed(1) + ' 60 78)"/>' +
+    '<circle cx="60" cy="78" r="4" fill="#EDEEF2"/></svg>';
+}
+
+function fmtChange(pct){
+  if (pct == null || isNaN(pct)) return '';
+  const cls = pct >= 0 ? 'price-up' : 'price-down';
+  const arrow = pct >= 0 ? '▲' : '▼';
+  return '<div class="market-card-change ' + cls + '">' + arrow + ' ' + Math.abs(pct).toFixed(2) + '%</div>';
+}
+
+function renderMarket(data){
+  const el = document.getElementById('marketView');
+  if (!data){
+    el.innerHTML = '<div class="market-error">시장 데이터를 불러오지 못했습니다. 새로고침을 눌러 다시 시도해 주세요.</div>';
+    return;
+  }
+
+  const indexCards = data.indices.map(ix => {
+    if (ix.error){
+      return '<div class="market-card"><div class="market-card-title">' + escapeHtml(ix.name) + '</div><div class="market-error">불러오기 실패</div></div>';
+    }
+    const changeColor = ix.changePct >= 0 ? '#E5484D' : '#3B82F6';
+    const badge = ix.athDrawdownPct != null ? '<div class="trigger-badge">' + drawdownStage(ix.athDrawdownPct) + '</div>' : '';
+    return '<div class="market-card">' +
+      '<div class="market-card-title">' + escapeHtml(ix.name) + '</div>' +
+      '<div class="market-card-value">' + ix.current.toLocaleString('ko-KR', { maximumFractionDigits: 2 }) + '</div>' +
+      fmtChange(ix.changePct) +
+      sparklineSVG(ix.sparkline, changeColor) +
+      badge +
+    '</div>';
+  }).join('');
+
+  let vixHtml = '<div class="market-error">VIX 정보를 불러오지 못했습니다.</div>';
+  if (data.vix && !data.vix.error){
+    const vixPct = Math.min(1, data.vix.current / 50); // 0~50 범위를 게이지에 매핑
+    const vixNote = data.vix.current < 20 ? '안정적인 변동성' : (data.vix.current < 30 ? '변동성 확대 구간' : '공포 구간');
+    vixHtml = '<div class="market-wide-card">' + miniGaugeSVG(vixPct) +
+      '<div class="market-wide-body">' +
+        '<div class="market-wide-title">VIX (변동성 지수)</div>' +
+        '<div class="market-wide-value">' + data.vix.current.toFixed(2) + '</div>' +
+        '<div class="market-wide-note">' + vixNote + '</div>' +
+      '</div></div>';
+  }
+
+  const krwHtml = data.krw
+    ? '<div class="market-wide-card"><div class="market-wide-body">' +
+        '<div class="market-wide-title">원/달러 환율</div>' +
+        '<div class="market-wide-value">' + data.krw.toLocaleString('ko-KR', { maximumFractionDigits: 2 }) + '원</div>' +
+      '</div></div>'
+    : '<div class="market-error">환율 정보를 불러오지 못했습니다.</div>';
+
+  let cryptoHtml = '<div class="market-error">암호화폐 정보를 불러오지 못했습니다.</div>';
+  if (data.crypto){
+    const c = data.crypto;
+    const btcColor = (c.btc.changePct || 0) >= 0 ? '#E5484D' : '#3B82F6';
+    const ethColor = (c.eth.changePct || 0) >= 0 ? '#E5484D' : '#3B82F6';
+    const btcCard = '<div class="market-card">' +
+      '<div class="market-card-title">BTC</div>' +
+      '<div class="market-card-value">$' + (c.btc.price != null ? c.btc.price.toLocaleString('en-US') : '-') + '</div>' +
+      fmtChange(c.btc.changePct) +
+      sparklineSVG(c.btc.sparkline, btcColor) +
+    '</div>';
+    const ethCard = '<div class="market-card">' +
+      '<div class="market-card-title">ETH</div>' +
+      '<div class="market-card-value">$' + (c.eth.price != null ? c.eth.price.toLocaleString('en-US') : '-') + '</div>' +
+      fmtChange(c.eth.changePct) +
+      sparklineSVG(c.eth.sparkline, ethColor) +
+    '</div>';
+
+    let fngHtml = '';
+    if (c.fng){
+      const fngPct = c.fng.value / 100;
+      fngHtml = '<div class="market-wide-card">' + miniGaugeSVG(fngPct) +
+        '<div class="market-wide-body">' +
+          '<div class="market-wide-title">크립토 공포·탐욕 지수</div>' +
+          '<div class="market-wide-value">' + c.fng.value + '</div>' +
+          '<div class="market-wide-note">' + escapeHtml(c.fng.label) + '</div>' +
+        '</div></div>';
+    }
+    const ratioHtml = c.ethBtcRatio != null
+      ? '<div class="market-wide-card"><div class="market-wide-body">' +
+          '<div class="market-wide-title">ETH/BTC 비율</div>' +
+          '<div class="market-wide-value">' + c.ethBtcRatio.toFixed(5) + '</div>' +
+        '</div></div>'
+      : '';
+    cryptoHtml = '<div class="market-grid">' + btcCard + ethCard + '</div>' + fngHtml + ratioHtml;
+  }
+
+  el.innerHTML =
+    '<div class="toolbar" style="padding:0 0 4px;">' +
+      '<span></span>' +
+      '<button class="refresh-btn" onclick="refreshMarket()">새로고침</button>' +
+    '</div>' +
+    '<div class="market-section-title">국내외 지수</div>' +
+    '<div class="market-grid">' + indexCards + '</div>' +
+    '<div class="market-section-title">리스크 지표</div>' +
+    vixHtml + krwHtml +
+    '<div class="market-section-title">암호화폐</div>' +
+    cryptoHtml;
+}
+
+async function refreshMarket({ silent = false } = {}){
+  if (currentTab === 'market' && !silent){
+    document.getElementById('marketView').innerHTML =
+      '<div class="state"><div class="spinner"></div><b>시장 데이터를 불러오는 중입니다</b>지수·환율·암호화폐 시세를 모으고 있어요.</div>';
+  }
+  const data = await loadMarketData();
+  state.market = data;
+  if (currentTab === 'market') renderMarket(data);
+}
+
+async function initMarket(){
+  const cached = loadMarketCache();
+  if (cached){
+    state.market = cached;
+    if (currentTab === 'market') renderMarket(cached);
+    const age = Date.now() - (cached.ts || 0);
+    if (age < MARKET_STALE_MS) return;
+    refreshMarket({ silent: true });
+  }else{
+    refreshMarket({ silent: false });
+  }
+}
+
 /* ---------------- Render ---------------- */
 function renderState(html){
   document.getElementById('list').innerHTML = '<div class="state">' + html + '</div>';
@@ -800,6 +1173,23 @@ async function initTab(tab){
 function switchTab(tab){
   currentTab = tab;
   document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+
+  const listEl = document.getElementById('list');
+  const marketEl = document.getElementById('marketView');
+  const toolbarEl = document.getElementById('newsToolbar');
+
+  if (tab === 'market'){
+    listEl.classList.add('hidden');
+    toolbarEl.classList.add('hidden');
+    marketEl.classList.remove('hidden');
+    if (state.market) renderMarket(state.market);
+    else refreshMarket({ silent: false });
+    return;
+  }
+
+  listEl.classList.remove('hidden');
+  toolbarEl.classList.remove('hidden');
+  marketEl.classList.add('hidden');
   if (state[tab]) renderList(state[tab], tab);
   else refresh(tab);
 }
@@ -885,6 +1275,7 @@ setDatestamp();
 setInterval(setDatestamp, 60000);
 initTab('domestic');
 initTab('intl');
+initMarket();
 
 if ('serviceWorker' in navigator){
   window.addEventListener('load', () => {
