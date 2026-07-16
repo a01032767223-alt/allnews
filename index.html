@@ -299,9 +299,28 @@ const INTEREST_KEYWORDS = {
 const RSS2JSON = 'https://api.rss2json.com/v1/api.json?rss_url=';
 const RSS2JSON_API_KEY = '2v0cwdedibrbnog3phzpfexyzehe3nkryy3jnmkk'; // rss2json.com 발급 키 적용 완료
 const CACHE_KEY_PREFIX = 'dawnbriefing_cache_';
+const TRANSLATION_CACHE_KEY = 'dawnbriefing_translations';
+const STALE_MS = 5 * 60 * 1000; // 5분 이내 캐시는 재수집 없이 그대로 사용
 const TOP_N = 30;
 
 const translationCache = new Map();
+try{
+  const rawT = localStorage.getItem(TRANSLATION_CACHE_KEY);
+  if (rawT){
+    const obj = JSON.parse(rawT);
+    Object.keys(obj).forEach(k => translationCache.set(k, obj[k]));
+  }
+}catch(e){}
+
+function persistTranslationCache(){
+  try{
+    const entries = Array.from(translationCache.entries()).slice(-500);
+    const obj = {};
+    entries.forEach(([k, v]) => { obj[k] = v; });
+    localStorage.setItem(TRANSLATION_CACHE_KEY, JSON.stringify(obj));
+  }catch(e){}
+}
+
 async function translateToKorean(text){
   if (!text) return text;
   if (translationCache.has(text)) return translationCache.get(text);
@@ -329,6 +348,7 @@ async function translateItems(items, concurrency = 6){
     }
   });
   await Promise.all(workers);
+  persistTranslationCache();
 }
 
 let state = { domestic: null, intl: null };
@@ -517,7 +537,10 @@ function renderList(ranked, tab){
     const originalLine = (tab === 'intl' && it.translatedTitle && it.translatedTitle !== it.title)
       ? '<div class="card-original">' + escapeHtml(it.title) + '</div>'
       : '';
-    return '<a class="card" href="' + it.link + '" target="_blank" rel="noopener">' +
+    const href = (tab === 'intl')
+      ? 'https://translate.google.com/translate?sl=auto&tl=ko&u=' + encodeURIComponent(it.link)
+      : it.link;
+    return '<a class="card" href="' + href + '" target="_blank" rel="noopener">' +
       '<div class="rank">' + rank + '</div>' +
       '<div class="card-body">' +
         '<div class="card-title">' + escapeHtml(displayTitle) + '</div>' +
@@ -553,8 +576,8 @@ function updateGauge(topDomestic, topIntl){
 }
 
 /* ---------------- Controller ---------------- */
-async function refresh(tab, { forceNetwork = true } = {}){
-  if (currentTab === tab){
+async function refresh(tab, { forceNetwork = true, silent = false } = {}){
+  if (currentTab === tab && !silent){
     renderState('<div class="spinner"></div><b>' + (tab === 'domestic' ? '국내' : '국외') + ' 뉴스를 모으는 중입니다</b>여러 매체의 기사를 비교해 중요도를 계산하고 있어요.');
   }
 
@@ -565,7 +588,7 @@ async function refresh(tab, { forceNetwork = true } = {}){
     if (cached) items = cached.items;
   }
   if (!items){
-    if (currentTab === tab) renderState('<b>뉴스를 불러오지 못했습니다</b>모든 매체 연결이 실패했어요. 브라우저 개발자도구 콘솔(F12)에서 빨간색 에러 메시지를 확인하시거나, 잠시 후 새로고침을 눌러 주세요.');
+    if (currentTab === tab && !silent) renderState('<b>뉴스를 불러오지 못했습니다</b>모든 매체 연결이 실패했어요. 브라우저 개발자도구 콘솔(F12)에서 빨간색 에러 메시지를 확인하시거나, 잠시 후 새로고침을 눌러 주세요.');
     return;
   }
 
@@ -574,7 +597,7 @@ async function refresh(tab, { forceNetwork = true } = {}){
   const ranked = rankedFull.slice(0, TOP_N);
 
   if (tab === 'intl'){
-    if (currentTab === tab){
+    if (currentTab === tab && !silent){
       renderState('<div class="spinner"></div><b>번역하는 중입니다</b>국외 기사 제목을 한글로 옮기고 있어요.');
     }
     await translateItems(ranked);
@@ -587,6 +610,32 @@ async function refresh(tab, { forceNetwork = true } = {}){
 
   const now = new Date();
   document.getElementById('lastUpdated').textContent = '마지막 업데이트 ' + now.toLocaleTimeString('ko-KR', { hour:'2-digit', minute:'2-digit' });
+}
+
+// Cache-first startup: show whatever we already have instantly (this is what makes
+// returning to the app - e.g. via a mobile back button - feel instant instead of
+// re-collecting every feed from scratch). Only hits the network if the cache is
+// missing or older than STALE_MS, and does so quietly in the background.
+async function initTab(tab){
+  const cached = loadCache(tab);
+  if (cached && Array.isArray(cached.items) && cached.items.length){
+    const useWeights = document.getElementById('weightToggle').checked;
+    const ranked = scoreItems(cached.items, tab, useWeights).slice(0, TOP_N);
+    if (tab === 'intl'){
+      // reuse persisted translations where possible; anything missing falls back
+      // to the original title instantly rather than blocking on network calls
+      ranked.forEach(it => { it.translatedTitle = translationCache.get(it.title) || null; });
+    }
+    state[tab] = ranked;
+    if (currentTab === tab) renderList(ranked, tab);
+    updateGauge(state.domestic, state.intl);
+
+    const age = Date.now() - (cached.ts || 0);
+    if (age < STALE_MS) return; // fresh enough — skip refetch entirely
+    refresh(tab, { forceNetwork: true, silent: true });
+  }else{
+    refresh(tab, { forceNetwork: true, silent: false });
+  }
 }
 
 function switchTab(tab){
@@ -625,8 +674,8 @@ document.getElementById('weightToggle').addEventListener('change', async () => {
 
 setDatestamp();
 setInterval(setDatestamp, 60000);
-refresh('domestic');
-refresh('intl');
+initTab('domestic');
+initTab('intl');
 
 if ('serviceWorker' in navigator){
   window.addEventListener('load', () => {
