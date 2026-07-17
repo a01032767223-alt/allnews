@@ -95,6 +95,44 @@
   }
   #needle{ transform-origin:60px 60px; transition:transform 0.9s cubic-bezier(.4,1.4,.4,1); }
 
+  .weather-widget{
+    margin-top:14px;
+    padding-top:14px;
+    border-top:1px solid var(--divider);
+  }
+  .weather-main{
+    display:flex;
+    align-items:center;
+    gap:12px;
+  }
+  .weather-icon{ font-size:30px; line-height:1; flex-shrink:0; }
+  .weather-body{ flex:1; min-width:0; }
+  .weather-loc{
+    font-size:11px;
+    color:var(--text-faint);
+    margin-bottom:2px;
+  }
+  .weather-temp{
+    font-family:"JetBrains Mono", monospace;
+    font-size:20px;
+    font-weight:700;
+    color:var(--text-primary);
+  }
+  .weather-desc{
+    font-size:12.5px;
+    color:var(--text-muted);
+  }
+  .weather-details{
+    display:flex;
+    flex-wrap:wrap;
+    gap:6px 14px;
+    margin-top:10px;
+    font-size:11.5px;
+    color:var(--text-muted);
+  }
+  .weather-details b{ color:var(--text-primary); font-weight:600; }
+  .weather-error{ font-size:12px; color:var(--text-faint); padding:8px 0; }
+
   /* ---------- Tabs ---------- */
   .tabbar{
     display:flex;
@@ -462,6 +500,9 @@
       <div class="gauge-label" id="gauge-label">오늘의 종합 이슈 지수</div>
       <div class="gauge-headline" id="gauge-headline">불러오는 중...</div>
     </div>
+  </div>
+  <div class="weather-widget" id="weatherWidget">
+    <div class="state" style="padding:12px 0;"><div class="spinner"></div>날씨를 확인하는 중...</div>
   </div>
 </div>
 
@@ -1204,6 +1245,165 @@ async function initMarket(){
   }
 }
 
+/* ---------------- Weather ---------------- */
+const WEATHER_DEFAULT_LOC = { lat: 36.6424, lon: 127.4890, name: '청주' };
+const WEATHER_CACHE_KEY = CACHE_KEY_PREFIX + 'weather';
+const WEATHER_STALE_MS = 20 * 60 * 1000;
+
+function getGeoLocation(){
+  return new Promise((resolve) => {
+    if (!navigator.geolocation){ resolve(null); return; }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
+      () => resolve(null),
+      { timeout: 6000, maximumAge: 10 * 60 * 1000 }
+    );
+  });
+}
+
+async function reverseGeocodeName(lat, lon){
+  try{
+    const res = await fetch('https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=' + lat + '&longitude=' + lon + '&localityLanguage=ko');
+    const data = await res.json();
+    return data.locality || data.city || data.principalSubdivision || '현재 위치';
+  }catch(e){
+    console.warn('reverse geocode failed:', e.message || e);
+    return '현재 위치';
+  }
+}
+
+function weatherCodeInfo(code){
+  const map = {
+    0: { icon:'☀️', label:'맑음' },
+    1: { icon:'🌤️', label:'대체로 맑음' },
+    2: { icon:'⛅', label:'구름 조금' },
+    3: { icon:'☁️', label:'흐림' },
+    45:{ icon:'🌫️', label:'안개' }, 48:{ icon:'🌫️', label:'서리 안개' },
+    51:{ icon:'🌦️', label:'약한 이슬비' }, 53:{ icon:'🌦️', label:'이슬비' }, 55:{ icon:'🌧️', label:'강한 이슬비' },
+    56:{ icon:'🌧️', label:'어는 이슬비' }, 57:{ icon:'🌧️', label:'강한 어는 이슬비' },
+    61:{ icon:'🌧️', label:'약한 비' }, 63:{ icon:'🌧️', label:'비' }, 65:{ icon:'🌧️', label:'강한 비' },
+    66:{ icon:'🌧️', label:'어는 비' }, 67:{ icon:'🌧️', label:'강한 어는 비' },
+    71:{ icon:'🌨️', label:'약한 눈' }, 73:{ icon:'❄️', label:'눈' }, 75:{ icon:'❄️', label:'강한 눈' },
+    77:{ icon:'🌨️', label:'싸락눈' },
+    80:{ icon:'🌦️', label:'약한 소나기' }, 81:{ icon:'🌧️', label:'소나기' }, 82:{ icon:'🌧️', label:'강한 소나기' },
+    85:{ icon:'🌨️', label:'약한 소낙눈' }, 86:{ icon:'🌨️', label:'소낙눈' },
+    95:{ icon:'⛈️', label:'뇌우' }, 96:{ icon:'⛈️', label:'우박 동반 뇌우' }, 99:{ icon:'⛈️', label:'강한 우박 동반 뇌우' }
+  };
+  return map[code] || { icon:'🌡️', label:'-' };
+}
+
+function pm25GradeKR(pm25){
+  if (pm25 == null) return null;
+  if (pm25 <= 15) return '좋음';
+  if (pm25 <= 35) return '보통';
+  if (pm25 <= 75) return '나쁨';
+  return '매우나쁨';
+}
+
+async function fetchWeatherData(lat, lon){
+  const forecastUrl = 'https://api.open-meteo.com/v1/forecast?latitude=' + lat + '&longitude=' + lon +
+    '&current=temperature_2m,apparent_temperature,weather_code' +
+    '&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max' +
+    '&timezone=auto';
+  const airUrl = 'https://air-quality-api.open-meteo.com/v1/air-quality?latitude=' + lat + '&longitude=' + lon + '&current=pm10,pm2_5';
+
+  const [forecastRes, airRes, locName] = await Promise.all([
+    fetch(forecastUrl).then(r => r.json()).catch(e => { console.warn('weather forecast failed:', e.message || e); return null; }),
+    fetch(airUrl).then(r => r.json()).catch(e => { console.warn('air quality failed:', e.message || e); return null; }),
+    reverseGeocodeName(lat, lon)
+  ]);
+
+  if (!forecastRes || !forecastRes.current) throw new Error('weather forecast unavailable');
+
+  return {
+    locName,
+    temp: forecastRes.current.temperature_2m,
+    feelsLike: forecastRes.current.apparent_temperature,
+    code: forecastRes.current.weather_code,
+    tMax: forecastRes.daily ? forecastRes.daily.temperature_2m_max[0] : null,
+    tMin: forecastRes.daily ? forecastRes.daily.temperature_2m_min[0] : null,
+    precipProb: forecastRes.daily ? forecastRes.daily.precipitation_probability_max[0] : null,
+    pm25: airRes && airRes.current ? airRes.current.pm2_5 : null,
+    pm10: airRes && airRes.current ? airRes.current.pm10 : null,
+    ts: Date.now()
+  };
+}
+
+async function loadWeather(){
+  let loc = await getGeoLocation();
+  if (!loc) loc = WEATHER_DEFAULT_LOC;
+  const data = await fetchWeatherData(loc.lat, loc.lon);
+  try{ localStorage.setItem(WEATHER_CACHE_KEY, JSON.stringify(data)); }catch(e){}
+  return data;
+}
+
+function loadWeatherCache(){
+  try{
+    const raw = localStorage.getItem(WEATHER_CACHE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  }catch(e){ return null; }
+}
+
+function renderWeather(data){
+  const el = document.getElementById('weatherWidget');
+  if (!data){
+    el.innerHTML = '<div class="weather-error">날씨 정보를 불러오지 못했습니다.</div>';
+    return;
+  }
+  const info = weatherCodeInfo(data.code);
+  const pm25Grade = pm25GradeKR(data.pm25);
+
+  const details = [];
+  if (data.tMax != null && data.tMin != null){
+    details.push('오늘 <b>' + Math.round(data.tMax) + '°</b> / <b>' + Math.round(data.tMin) + '°</b>');
+  }
+  if (data.precipProb != null){
+    details.push('강수확률 <b>' + Math.round(data.precipProb) + '%</b>');
+  }
+  if (pm25Grade){
+    details.push('미세먼지 <b>' + pm25Grade + '</b>' + (data.pm25 != null ? ' (PM2.5 ' + Math.round(data.pm25) + ')' : ''));
+  }
+
+  el.innerHTML =
+    '<div class="weather-main">' +
+      '<div class="weather-icon">' + info.icon + '</div>' +
+      '<div class="weather-body">' +
+        '<div class="weather-loc">' + escapeHtml(data.locName) + '</div>' +
+        '<div class="weather-temp">' + Math.round(data.temp) + '°C</div>' +
+        '<div class="weather-desc">' + info.label + (data.feelsLike != null ? ' · 체감 ' + Math.round(data.feelsLike) + '°C' : '') + '</div>' +
+      '</div>' +
+    '</div>' +
+    (details.length ? '<div class="weather-details">' + details.map(d => '<span>' + d + '</span>').join('') + '</div>' : '');
+}
+
+async function refreshWeather({ silent = false } = {}){
+  if (!silent){
+    document.getElementById('weatherWidget').innerHTML =
+      '<div class="state" style="padding:12px 0;"><div class="spinner"></div>날씨를 확인하는 중...</div>';
+  }
+  try{
+    const data = await loadWeather();
+    renderWeather(data);
+  }catch(e){
+    console.warn('weather load failed:', e.message || e);
+    const cached = loadWeatherCache();
+    if (cached) renderWeather(cached);
+    else renderWeather(null);
+  }
+}
+
+async function initWeather(){
+  const cached = loadWeatherCache();
+  if (cached){
+    renderWeather(cached);
+    const age = Date.now() - (cached.ts || 0);
+    if (age < WEATHER_STALE_MS) return;
+    refreshWeather({ silent: true });
+  }else{
+    refreshWeather({ silent: false });
+  }
+}
+
 /* ---------------- Render ---------------- */
 function renderState(html){
   document.getElementById('list').innerHTML = '<div class="state">' + html + '</div>';
@@ -1456,6 +1656,7 @@ setInterval(setDatestamp, 60000);
 initTab('domestic');
 initTab('intl');
 initMarket();
+initWeather();
 
 if ('serviceWorker' in navigator){
   window.addEventListener('load', () => {
