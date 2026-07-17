@@ -122,6 +122,30 @@
   .tab[data-tab="domestic"].active{ border-bottom-color:var(--accent-teal); }
   .tab[data-tab="intl"].active{ border-bottom-color:var(--accent-coral); }
   .tab[data-tab="market"].active{ border-bottom-color:var(--accent-gold); }
+  .tab[data-tab="finance"].active{ border-bottom-color:var(--accent-teal); }
+
+  .fin-subtabbar{
+    display:flex;
+    gap:8px;
+    padding:10px 20px 0;
+  }
+  .fin-subtab{
+    flex:1;
+    text-align:center;
+    padding:7px 0;
+    border-radius:20px;
+    font-size:12.5px;
+    font-weight:600;
+    color:var(--text-muted);
+    background:var(--bg-panel);
+    border:1px solid var(--divider);
+    cursor:pointer;
+  }
+  .fin-subtab.active{
+    color:var(--text-primary);
+    border-color:var(--accent-gold);
+    background:rgba(232,163,61,0.12);
+  }
 
   .toolbar{
     display:flex; align-items:center; justify-content:space-between;
@@ -239,7 +263,14 @@
     text-align:center;
     font-size:11px;
     color:var(--text-faint);
-    padding:18px 20px 0;
+    padding:18px 20px 24px;
+  }
+  .footer-copyright{
+    margin-top:8px;
+    font-size:10.5px;
+    line-height:1.6;
+    color:var(--text-faint);
+    opacity:0.8;
   }
 
   .hidden{ display:none !important; }
@@ -438,6 +469,12 @@
   <button class="tab active" data-tab="domestic">국내</button>
   <button class="tab" data-tab="intl">국외</button>
   <button class="tab" data-tab="market">증시</button>
+  <button class="tab" data-tab="finance">금융</button>
+</div>
+
+<div class="fin-subtabbar hidden" id="financeSubtabs">
+  <button class="fin-subtab active" data-fintab="finDomestic">국내금융</button>
+  <button class="fin-subtab" data-fintab="finIntl">해외금융</button>
 </div>
 
 <div class="toolbar" id="newsToolbar">
@@ -456,7 +493,14 @@
   <div class="state"><div class="spinner"></div><b>시장 데이터를 불러오는 중입니다</b>지수·환율·암호화폐 시세를 모으고 있어요.</div>
 </div>
 
-<footer id="lastUpdated"></footer>
+<footer>
+  <div id="lastUpdated"></div>
+  <div class="footer-copyright">
+    각 기사의 저작권은 해당 언론사(연합뉴스·한겨레·경향신문·조선일보·동아일보·BBC·NYT·The Guardian·Al Jazeera·NPR·한국경제·서울경제·CNBC·MarketWatch 등)에 있으며,<br>
+    본 앱은 제목·요약과 원문 링크만 제공합니다. 전체 기사는 각 언론사 원문에서 확인해 주세요.<br>
+    © 2026 주요뉴스 30위 · 개인적 용도로 제작됨
+  </div>
+</footer>
 
 <div class="modal-overlay hidden" id="articleModal">
   <div class="modal-panel">
@@ -484,6 +528,18 @@ const FEEDS = {
     { name:'The Guardian', url:'https://www.theguardian.com/world/rss' },
     { name:'Al Jazeera', url:'https://www.aljazeera.com/xml/rss/all.xml' },
     { name:'NPR World', url:'https://feeds.npr.org/1004/rss.xml' }
+  ],
+  finDomestic: [
+    { name:'한국경제(경제)', url:'https://www.hankyung.com/feed/economy' },
+    { name:'한국경제(증권)', url:'https://www.hankyung.com/feed/finance' },
+    { name:'서울경제(경제)', url:'https://www.sedaily.com/rss/economy' },
+    { name:'서울경제(증권)', url:'https://www.sedaily.com/rss/finance' }
+  ],
+  finIntl: [
+    { name:'CNBC Business', url:'https://www.cnbc.com/id/10001147/device/rss/rss.html' },
+    { name:'CNBC Markets', url:'https://www.cnbc.com/id/10000664/device/rss/rss.html' },
+    { name:'CNBC Economy', url:'https://www.cnbc.com/id/15839135/device/rss/rss.html' },
+    { name:'MarketWatch', url:'http://feeds.marketwatch.com/marketwatch/topstories/' }
   ]
 };
 
@@ -491,8 +547,17 @@ const INTEREST_KEYWORDS = {
   domestic: ['교육','특수교육','시각장애','장애인','맹학교','기독교','교회','신앙','예배','목회',
              '투자','증시','코스피','코스닥','나스닥','금리','환율','비트코인','이더리움','암호화폐','가상자산'],
   intl: ['education','disability','disabilities','blind','visually impaired','church','faith','christian',
-         'investment','stock market','nasdaq','s&p','bitcoin','ethereum','crypto','interest rate','federal reserve','fed ']
+         'investment','stock market','nasdaq','s&p','bitcoin','ethereum','crypto','interest rate','federal reserve','fed '],
+  finDomestic: ['금리','환율','코스피','코스닥','나스닥','S&P','반도체','실적','수출','물가','부동산','비트코인','이더리움','암호화폐'],
+  finIntl: ['interest rate','federal reserve','fed ','inflation','earnings','nasdaq','s&p','dollar','recession','bitcoin','ethereum','crypto']
 };
+
+// finDomestic behaves like domestic (Korean clustering, no translation),
+// finIntl behaves like intl (English clustering, translate-on-demand).
+function isKoTab(tab){ return tab === 'domestic' || tab === 'finDomestic'; }
+function isIntlTab(tab){ return tab === 'intl' || tab === 'finIntl'; }
+function isFinanceTab(tab){ return tab === 'finDomestic' || tab === 'finIntl'; }
+
 
 const RSS2JSON = 'https://api.rss2json.com/v1/api.json?rss_url=';
 const RSS2JSON_API_KEY = '2v0cwdedibrbnog3phzpfexyzehe3nkryy3jnmkk'; // rss2json.com 발급 키 적용 완료
@@ -607,7 +672,7 @@ async function fetchArticleText(url){
   throw lastErr || new Error('all article proxies failed');
 }
 
-let state = { domestic: null, intl: null, market: null };
+let state = { domestic: null, intl: null, market: null, finDomestic: null, finIntl: null };
 let currentTab = 'domestic';
 
 /* ---------------- Utilities ---------------- */
@@ -719,7 +784,7 @@ function loadCache(tab){
 
 /* ---------------- Scoring ---------------- */
 function scoreItems(items, tab, useWeights){
-  const isKo = tab === 'domestic';
+  const isKo = isKoTab(tab);
   const simFn = isKo ? koBigrams : enTokens;
   const threshold = isKo ? 0.32 : 0.28;
   const sigs = items.map(it => simFn(it.title));
@@ -1154,11 +1219,12 @@ function renderList(ranked, tab){
     const pct = Math.round(it.score * 100);
     const rank = String(i + 1).padStart(2, '0');
     const multi = it.sourceCount > 1 ? it.sourceCount + '개 매체 공통 · ' : '';
-    const displayTitle = (tab === 'intl' && it.translatedTitle) ? it.translatedTitle : it.title;
-    const originalLine = (tab === 'intl' && it.translatedTitle && it.translatedTitle !== it.title)
+    const intlTab = isIntlTab(tab);
+    const displayTitle = (intlTab && it.translatedTitle) ? it.translatedTitle : it.title;
+    const originalLine = (intlTab && it.translatedTitle && it.translatedTitle !== it.title)
       ? '<div class="card-original">' + escapeHtml(it.title) + '</div>'
       : '';
-    const metaRow = (tab === 'intl')
+    const metaRow = intlTab
       ? '<div class="card-meta-row">' +
           '<div class="card-meta">' + escapeHtml(it.source) + ' · ' + multi + timeAgo(it.pubDate) + '</div>' +
           '<button class="translate-btn" data-idx="' + i + '">번역으로 보기</button>' +
@@ -1205,8 +1271,9 @@ function updateGauge(topDomestic, topIntl){
 
 /* ---------------- Controller ---------------- */
 async function refresh(tab, { forceNetwork = true, silent = false } = {}){
+  const tabLabel = { domestic:'국내', intl:'국외', finDomestic:'국내 금융', finIntl:'해외 금융' }[tab] || tab;
   if (currentTab === tab && !silent){
-    renderState('<div class="spinner"></div><b>' + (tab === 'domestic' ? '국내' : '국외') + ' 뉴스를 모으는 중입니다</b>여러 매체의 기사를 비교해 중요도를 계산하고 있어요.');
+    renderState('<div class="spinner"></div><b>' + tabLabel + ' 뉴스를 모으는 중입니다</b>여러 매체의 기사를 비교해 중요도를 계산하고 있어요.');
   }
 
   let items = null;
@@ -1224,9 +1291,9 @@ async function refresh(tab, { forceNetwork = true, silent = false } = {}){
   const rankedFull = scoreItems(items, tab, useWeights);
   const ranked = rankedFull.slice(0, TOP_N);
 
-  if (tab === 'intl'){
+  if (isIntlTab(tab)){
     if (currentTab === tab && !silent){
-      renderState('<div class="spinner"></div><b>번역하는 중입니다</b>국외 기사 제목을 한글로 옮기고 있어요.');
+      renderState('<div class="spinner"></div><b>번역하는 중입니다</b>기사 제목을 한글로 옮기고 있어요.');
     }
     await translateItems(ranked);
   }
@@ -1249,7 +1316,7 @@ async function initTab(tab){
   if (cached && Array.isArray(cached.items) && cached.items.length){
     const useWeights = document.getElementById('weightToggle').checked;
     const ranked = scoreItems(cached.items, tab, useWeights).slice(0, TOP_N);
-    if (tab === 'intl'){
+    if (isIntlTab(tab)){
       // reuse persisted translations where possible; anything missing falls back
       // to the original title instantly rather than blocking on network calls
       ranked.forEach(it => { it.translatedTitle = translationCache.get(it.title) || null; });
@@ -1267,14 +1334,28 @@ async function initTab(tab){
 }
 
 function switchTab(tab){
-  currentTab = tab;
-  document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  let target = tab;
+  if (tab === 'finance') target = isFinanceTab(currentTab) ? currentTab : 'finDomestic';
+  currentTab = target;
+
+  document.querySelectorAll('.tab').forEach(b => {
+    const bt = b.dataset.tab;
+    const active = (bt === target) || (bt === 'finance' && isFinanceTab(target));
+    b.classList.toggle('active', active);
+  });
+
+  const subbar = document.getElementById('financeSubtabs');
+  const showSub = isFinanceTab(target);
+  subbar.classList.toggle('hidden', !showSub);
+  if (showSub){
+    document.querySelectorAll('.fin-subtab').forEach(b => b.classList.toggle('active', b.dataset.fintab === target));
+  }
 
   const listEl = document.getElementById('list');
   const marketEl = document.getElementById('marketView');
   const toolbarEl = document.getElementById('newsToolbar');
 
-  if (tab === 'market'){
+  if (target === 'market'){
     listEl.classList.add('hidden');
     toolbarEl.classList.add('hidden');
     marketEl.classList.remove('hidden');
@@ -1286,8 +1367,8 @@ function switchTab(tab){
   listEl.classList.remove('hidden');
   toolbarEl.classList.remove('hidden');
   marketEl.classList.add('hidden');
-  if (state[tab]) renderList(state[tab], tab);
-  else refresh(tab);
+  if (state[target]) renderList(state[target], target);
+  else refresh(target);
 }
 
 function setDatestamp(){
@@ -1337,7 +1418,7 @@ document.getElementById('list').addEventListener('click', (e) => {
   if (!btn) return;
   e.preventDefault();
   e.stopPropagation();
-  const item = state.intl && state.intl[Number(btn.dataset.idx)];
+  const item = state[currentTab] && state[currentTab][Number(btn.dataset.idx)];
   if (item) openArticleModal(item);
 });
 document.getElementById('modalClose').addEventListener('click', closeArticleModal);
@@ -1352,6 +1433,9 @@ document.addEventListener('keydown', (e) => {
 document.querySelectorAll('.tab').forEach(btn => {
   btn.addEventListener('click', () => switchTab(btn.dataset.tab));
 });
+document.querySelectorAll('.fin-subtab').forEach(btn => {
+  btn.addEventListener('click', () => switchTab(btn.dataset.fintab));
+});
 document.getElementById('refreshBtn').addEventListener('click', () => refresh(currentTab));
 document.getElementById('weightToggle').addEventListener('change', async () => {
   if (state[currentTab]){
@@ -1359,7 +1443,7 @@ document.getElementById('weightToggle').addEventListener('change', async () => {
     const cached = loadCache(currentTab);
     if (cached){
       const ranked = scoreItems(cached.items, currentTab, useWeights).slice(0, TOP_N);
-      if (currentTab === 'intl') await translateItems(ranked);
+      if (isIntlTab(currentTab)) await translateItems(ranked);
       state[currentTab] = ranked;
       renderList(ranked, currentTab);
       updateGauge(state.domestic, state.intl);
